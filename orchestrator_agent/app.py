@@ -19,7 +19,6 @@ from calendar_tools import (
     async_authenticate_google_calendar,
     CalendarEventRequest
 )
-import re
 
 # Initialize Logger
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -102,133 +101,6 @@ async def get_current_location_async():
 
 
 # --- Function to create and run the Crew, capturing its output ---
-async def run_travel_crew_and_capture_output(user_request: str) -> dict:
-    """
-    Creates and runs the CrewAI travel planning crew, capturing all
-    verbose output and returning it along with the final result.
-    """
-    # Authenticate Google Calendar asynchronously
-    credentials = await async_authenticate_google_calendar()
-    if not credentials:
-        return {"final_result": "Authentication failed.", "logs": "Google Calendar authentication failed."}
-    
-    current_date = get_current_date()
-    current_location = await get_current_location_async()
-    llm_instance = initialize_llm() # Ensure LLM is initialized once
-
-    orchestrator_agent = Agent(
-        role="Travel Orchestrator Agent",
-        goal=f"Coordinate calendar and flight search to find optimal trips for {user_request}",
-        backstory=f"""
-        Takes {user_request}, detects current date {current_date} and location {current_location['city']}, {current_location['region']}.
-        Your core responsibility is to orchestrate the entire travel planning process.
-        You will interact with specialized agents (Calendar Agent, Flight Search Agent) by delegating tasks to them.
-        You will then synthesize their findings, present curated options to the user, and finally book the chosen trip on their calendar.
-        """,
-        tools=[], # Orchestrator typically uses other agents/tasks, not direct tools
-        llm=llm_instance,
-        #allow_delegation=True,
-        verbose=True
-    )
-
-    flight_search_agent = Agent(
-        role="Flight Search Agent",
-        goal="Find flights and accommodations based on date, budget, and location using Google Search.",
-        backstory=f"Searches for best deals on flights and accommodations from FlightRequest and HotelRequest using the SerpApiGoogleSearchTool.",
-        tools=[serp_api_tool],
-        llm=llm_instance,
-        verbose=True
-    )
-
-    calendar_agent = Agent(
-        role="Calendar Agent",
-        goal="Check calendar availability and create events",
-        backstory=f"Analyzes user's calendar starting from CalendarRequest to find free time and book events using Google Calendar tools.",
-        tools=[GetAvailabilityTool(), CreateCalendarEventTool()],
-        llm=llm_instance,
-        verbose=True
-    )
-
-    orchestrator_main_collaboration_task = Task(
-        description=f"""
-        **Comprehensive Travel Planning for: {user_request}**
-
-        Your mission is to act as the central coordinator for this travel request.
-        Follow these sequential steps to deliver a complete travel plan:
-        0.  ** Parse user travel request (Your responsibility):**
-            * fill {TravelRequest} by parsing {user_request} using {current_date} as start_date.
-
-        1.  **Calendar Availability Check (Delegate to Calendar Agent):**
-            * First, delegate a task to the 'Calendar Agent' to check the user's Google Calendar for availability.
-            * Instruct the 'Calendar Agent' to use {TravelRequest}, considering any specified PTO or blackout dates in the original request.
-            * The 'Calendar Agent' must return a JSON list of {AvailableSlot} objects, or a clear error message/indication of no availability.
-
-        2.  **Flight and Accommodation Search (Delegate to Flight Search Agent):**
-            * Once you receive {AvailableSlot} from the 'Calendar Agent', delegate a task to the 'Flight Search Agent'.
-            * Instruct the 'Flight Search Agent' to search for the best flight and potentially accommodation options from origin to the user's desired destination within budget constraints from {TravelRequest}.
-            * The 'Flight Search Agent' must provide a JSON list of {AIResponse} with at least 3 flight options (and optionally hotels) with complete details (price, dates, airline, stops, class, flight number, booking link). If no valid dates are available or no flights found, it should return an appropriate message.
-
-        3.  **Plan Synthesis and Curation (Your responsibility):**
-            * Carefully analyze the outputs from both the 'Calendar Agent' and the 'Flight Search Agent'.
-            * Synthesize this information to identify the top 3 best travel options that align with the user's request, considering both availability and travel options.
-            * **Your final output MUST be in {TravelOptionsResponse} format containing the top 3 travel options.**
-            * IMPORTANT: Each flight option MUST include start_date and end_date as datetime fields in the FlightInformation model for proper calendar integration.
-            * If no viable options can be found due to calendar conflicts or lack of flights, provide a polite and informative message to the user.
-        
-        4.  **Present Options and Get User Choice:**
-             * Present the curated top 3 travel options to the user in a clear, easy-to-read format.
-             * Present the options in a numbered list (1, 2, 3) with clear descriptions.
-             * IMPORTANT: Stop here after presenting the options. Do NOT proceed to booking.
-             * Your final output should be the presentation of the 3 options only.
-             * ALSO IMPORTANT: You must return the structured AIResponse data in JSON format at the end of your output.
-
-        5.  **Book Selected Trip (Delegate to Calendar Agent):**
-            * Once you receive user choice and {TravelOptionsResponse}, use 'CreateCalendarEventTool()' tool (via the 'Calendar Agent') to book the selected trip in their Google Calendar.
-            * Construct an appropriate event summary and description using the details of the chosen trip.
-            * Confirm the booking with the user, including the selected trip details and the HTML link to the newly created calendar event.
-
-        Your final output should be a comprehensive summary of the chosen trip and the calendar booking confirmation.
-        """,
-        expected_output="A clear presentation of 3 travel options with detailed information for each option, formatted for user review and selection. MUST include structured TravelOption data  with flight_information and accommodation_information for each option.",
-        agent=orchestrator_agent,
-        tools=[GetAvailabilityTool(), CreateCalendarEventTool(), serp_api_tool], # The orchestrator has access to all tools to delegate
-        verbose=True
-    )
-
-    crew = Crew(
-        agents=[orchestrator_agent, calendar_agent, flight_search_agent],
-        tasks=[orchestrator_main_collaboration_task],
-        process=Process.sequential,
-        verbose=True
-    )
-    
-    try:
-        logger.info("Starting crew execution...")
-        
-        # Add some debug output
-        #print(f"🔍 Debug: Running crew for request: {user_request}")
-        
-        result = await asyncio.to_thread(crew.kickoff, inputs={
-            "user_request": user_request,
-            "current_date": current_date,
-            "current_location": current_location
-        })
-        
-        #print(f"🔍 Debug: Crew result: {result}")
-        #print(f"🔍 Debug: Result type: {type(result)}")
-        
-        logger.info("Crew execution completed successfully")
-        return {
-            "final_result": str(result) if result else "No result generated - crew may not have run properly",
-            "logs": f"Debug: Request={user_request}, Result={result}"
-        }
-    except Exception as e:
-        logger.error(f"Error running crew: {e}")
-        print(f"🔍 Debug: Exception occurred: {e}")
-        return {
-            "final_result": f"Error: {e}",
-            "logs": f"Exception: {e}"
-        }
 
 async def create_calendar_event_for_trip(selection: str, travel_options_list: List[dict]) -> str:
     """
@@ -398,59 +270,6 @@ class CalendarInfo(BaseModel):
     available_slots: List[AvailableSlot]   # List of available windows
     errors: Optional[str] = None           # Any error messages encountered 
 
-class FlightRequest(BaseModel):
-    origin: str
-    destination: str
-    outbound_date: str
-    return_date: str
-    stops: int 
-    budget: Optional[float] = None
-    travel_class: Optional[str] = "Economy"
-
-class HotelRequest(BaseModel):
-    location: str
-    check_in_date: str
-    check_out_date: str
-    budget: Optional[float] = None
-    rating_min: Optional[float] = None
-
-class ItineraryRequest(BaseModel):
-    destination: str
-    check_in_date: str
-    check_out_date: str
-    flights: Optional[List[FlightRequest]] = None
-    hotels: Optional[List[HotelRequest]] = None
-
-class FlightInfo(BaseModel):
-    airline: str
-    price: float
-    duration: str
-    stops: int
-    departure: str
-    arrival: str
-    travel_class: str
-    flight_number: str
-    booking_link: str
-    airline_logo: Optional[str] = None
-
-class HotelInfo(BaseModel):
-    name: str
-    price: float
-    rating: float
-    location: str
-    link: str
-
-class AIResponse(BaseModel):
-    available_dates: List[str] = []
-    flights: List[FlightInfo] = []
-    hotels: List[HotelInfo] = []
-    
-    ai_flight_recommendation: Optional[str] = ""
-    ai_hotel_recommendation: Optional[str] = ""
-    itinerary_summary: Optional[str] = ""
-    
-    top_choice: Optional[dict] = None
-
 
 # --- Function to create and run the Crew, capturing its output ---
 async def run_travel_crew_and_capture_output(user_request: str) -> dict:
@@ -485,7 +304,7 @@ async def run_travel_crew_and_capture_output(user_request: str) -> dict:
     flight_search_agent = Agent(
         role="Flight Search Agent",
         goal="Find flights and accommodations based on date, budget, and location using Google Search.",
-        backstory=f"Searches for best deals on flights and accommodations from FlightRequest and HotelRequest using the SerpApiGoogleSearchTool.",
+        backstory=f"Searches for best deals on flights and accommodations using the SerpApiGoogleSearchTool.",
         tools=[serp_api_tool],
         llm=llm_instance,
         verbose=True
@@ -517,7 +336,7 @@ async def run_travel_crew_and_capture_output(user_request: str) -> dict:
         2.  **Flight and Accommodation Search (Delegate to Flight Search Agent):**
             * Once you receive {AvailableSlot} from the 'Calendar Agent', delegate a task to the 'Flight Search Agent'.
             * Instruct the 'Flight Search Agent' to search for the best flight and potentially accommodation options from origin to the user's desired destination within budget constraints from {TravelRequest}.
-            * The 'Flight Search Agent' must provide a JSON list of {AIResponse} with at least 3 flight options (and optionally hotels) with complete details (price, dates, airline, stops, class, flight number, booking link). If no valid dates are available or no flights found, it should return an appropriate message.
+            * The 'Flight Search Agent' must provide flight and accommodation options with complete details (price, dates, airline, stops, class, flight number, booking link). If no valid dates are available or no flights found, it should return an appropriate message.
 
         3.  **Plan Synthesis and Curation (Your responsibility):**
             * Carefully analyze the outputs from both the 'Calendar Agent' and the 'Flight Search Agent'.
@@ -557,17 +376,11 @@ async def run_travel_crew_and_capture_output(user_request: str) -> dict:
     try:
         logger.info("Starting crew execution...")
         
-        # Add some debug output
-        #print(f"🔍 Debug: Running crew for request: {user_request}")
-        
         result = await asyncio.to_thread(crew.kickoff, inputs={
             "user_request": user_request,
             "current_date": current_date,
             "current_location": current_location
         })
-        
-        #print(f"🔍 Debug: Crew result: {result}")
-        #print(f"🔍 Debug: Result type: {type(result)}")
         
         logger.info("Crew execution completed successfully")
         return {
@@ -576,7 +389,6 @@ async def run_travel_crew_and_capture_output(user_request: str) -> dict:
         }
     except Exception as e:
         logger.error(f"Error running crew: {e}")
-        print(f"🔍 Debug: Exception occurred: {e}")
         return {
             "final_result": f"Error: {e}",
             "logs": f"Exception: {e}"
