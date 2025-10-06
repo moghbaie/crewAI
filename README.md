@@ -112,19 +112,22 @@ python agent.py
 # Basic usage (defaults to Miami, 4 nights, $1,000 budget, 3 PTO days)
 python orchestrator_agent/agent.py
 
-# Custom destination and parameters
-python orchestrator_agent/agent.py --destination Paris --nights 7 --budget '$2,500' --max-pto 5
+# Using natural language (recommended)
+python orchestrator_agent/agent_sequential.py "I want to travel to Paris for 7 nights with a $2,500 budget"
 
-# Short form options
-python orchestrator_agent/agent.py -d Tokyo -n 5 -b '$3,000' -p 4 -m 6
+# Interactive mode
+python orchestrator_agent/agent_sequential.py
+
+# Using --request option
+python orchestrator_agent/agent_sequential.py --request "Plan a trip to Tokyo for 5 days"
 ```
 
 **Command Line Options:**
-- `--destination, -d`: Destination city (default: Miami)
-- `--nights, -n`: Number of nights for the trip (default: 4)
-- `--budget, -b`: Total budget for flights and accommodations (default: $1,000)
-- `--max-pto, -p`: Maximum PTO days to use (default: 3)
-- `--months-ahead, -m`: Months ahead to search for travel (default: 3)
+- `--request`: Optional flag to specify travel request text
+- Positional arguments: Direct travel request as text
+- Interactive mode: Prompts for input if no arguments provided
+
+**Note:** The system uses natural language processing to understand travel requirements. Simply describe your trip in plain English rather than using structured parameters.
 
 **Requirements:**
 - All Calendar Agent requirements
